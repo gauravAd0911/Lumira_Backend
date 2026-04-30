@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Payment Test</title>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+<body>
+<h2>Razorpay Payment Test</h2>
+<button onclick="pay()">Pay Now</button>
+<p id="msg" style="margin-top:16px; font-weight:600;"></p>
+
+<script>
+async function pay() {
+    const msg = document.getElementById('msg');
+    msg.style.color = 'blue';
+    msg.textContent = 'Creating order...';
+
+    try {
+        const res  = await fetch('http://127.0.0.1:8000/payment/create-order?user_id=1');
+        const data = await res.json();
+        console.log('Order:', data);
+
+        if (!res.ok) {
+            msg.style.color = 'red';
+            msg.textContent = 'Error: ' + (data.detail || 'Order failed');
+            return;
+        }
+
+        const rzp = new Razorpay({
+            key:         data.key,
+            amount:      data.amount,
+            currency:    data.currency,
+            name:        'My Shop',
+            description: 'Test Payment',
+            order_id:    data.razorpay_order_id,
+
+            handler: async function(response) {
+                msg.style.color = 'blue';
+                msg.textContent = 'Verifying...';
+
+                const vRes = await fetch('http://127.0.0.1:8000/payment/verify', {
+                    method:  'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        razorpay_order_id:   response.razorpay_order_id,
+                        razorpay_payment_id: response.razorpay_payment_id,
+                        razorpay_signature:  response.razorpay_signature,
+                    })
+                });
+                const result = await vRes.json();
+                console.log('Verify:', result);
+
+                if (result.status === 'success') {
+                    msg.style.color  = 'green';
+                    msg.textContent  = '✅ Payment Successful! Order ID: ' + result.order_id;
+                } else {
+                    msg.style.color  = 'red';
+                    msg.textContent  = '❌ Payment Failed';
+                }
+            },
+
+            modal: { ondismiss: () => { msg.textContent = 'Cancelled'; } }
+        });
+
+        rzp.on('payment.failed', r => {
+            msg.style.color = 'red';
+            msg.textContent = 'Failed: ' + r.error.description;
+        });
+
+        rzp.open();
+
+    } catch(e) {
+        console.error(e);
+        msg.style.color = 'red';
+        msg.textContent = 'Error: ' + e.message;
+    }
+}
+</script>
+</body>
+</html>

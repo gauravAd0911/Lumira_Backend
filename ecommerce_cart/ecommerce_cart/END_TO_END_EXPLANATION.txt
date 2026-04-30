@@ -1,0 +1,279 @@
+﻿Ecommerce Cart API — End-to-End Explanation
+=========================================
+Generated: 2026-04-24
+
+1) What this project is
+-----------------------
+This is a FastAPI + SQLAlchemy + MySQL service that provides a simple shopping-cart backend.
+It supports:
+- Product listing / creation / lookup
+- Cart creation (implicit) + add/update/remove items
+- Cart totals (items count + total price)
+
+Authentication (dev-mode):
+- The user is identified by the HTTP header: X-User-Id
+- If missing/empty, the API uses a fallback user id (guest_user)
+
+
+2) Project structure
+--------------------
+C:\Advance Project\ecommerce_cart\
+  app\
+    main.py
+    core\
+      config.py
+      database.py
+    models\
+      models.py
+    routers\
+      cart.py
+      products.py
+    schemas\
+      schemas.py
+  .env
+  requirements.txt
+  run_all.bat
+  ecommerce_cart_full.sql
+  read.md
+
+
+3) Runtime configuration (.env)
+-------------------------------
+File: C:\Advance Project\ecommerce_cart\.env
+Key settings:
+- DB_HOST, DB_PORT, DB_USER, DB_PASSWORD
+- DB_NAME=ecommerce_db  (IMPORTANT: this project uses its own DB)
+
+The settings model is defined in:
+- C:\Advance Project\ecommerce_cart\app\core\config.py
+
+
+4) Database layer
+-----------------
+File: C:\Advance Project\ecommerce_cart\app\core\database.py
+What it does:
+- Builds DATABASE_URL using values from app.core.config.settings
+- Creates SQLAlchemy engine (mysql+pymysql)
+- Defines SessionLocal (session factory)
+- Defines Base = declarative_base()
+- Exposes get_db() dependency that yields a session and closes it
+
+
+5) Database schema (single file)
+--------------------------------
+File: C:\Advance Project\ecommerce_cart\ecommerce_cart_full.sql
+This is the ONE consolidated SQL file for this project.
+It includes:
+- CREATE DATABASE ecommerce_db
+- CREATE TABLE products, carts, cart_items
+- Idempotent seed data (safe to re-run)
+- Reference query templates in a block comment
+
+How to apply schema + seed:
+- mysql -u root -pRoot -e "source C:/Advance Project/ecommerce_cart/ecommerce_cart_full.sql"
+
+
+6) Data model (SQLAlchemy ORM)
+------------------------------
+File: C:\Advance Project\ecommerce_cart\app\models\models.py
+Entities:
+
+6.1) Product
+- Table: products
+- Columns (core):
+  id (INT, PK)
+  name (VARCHAR)
+  description (TEXT)
+  price (FLOAT)
+  stock (INT)
+  image_url (TEXT)
+  is_active (BOOLEAN)
+  created_at, updated_at (DATETIME)
+- Relationship:
+  cart_items: one-to-many with CartItem
+
+6.2) Cart
+- Table: carts
+- Columns:
+  id (INT, PK)
+  user_id (VARCHAR)
+  is_active (BOOLEAN)
+  created_at, updated_at
+- Relationship:
+  items: one-to-many with CartItem
+
+6.3) CartItem
+- Table: cart_items
+- Columns:
+  id (INT, PK)
+  cart_id (FK -> carts.id)
+  product_id (FK -> products.id)
+  quantity (INT)
+  added_at, updated_at
+- Constraints:
+  UNIQUE(cart_id, product_id) to prevent duplicate product rows per cart
+
+
+7) API schemas (Pydantic)
+-------------------------
+File: C:\Advance Project\ecommerce_cart\app\schemas\schemas.py
+Key schemas:
+- ProductCreate / ProductResponse
+- AddCartItemRequest
+- UpdateCartItemRequest
+- CartResponse (includes computed totals)
+- MessageResponse / ErrorResponse
+
+CartResponse totals:
+- total_items = sum(quantity)
+- total_price = sum(quantity * product.price)
+
+
+8) FastAPI application startup
+------------------------------
+File: C:\Advance Project\ecommerce_cart\app\main.py
+Startup flow:
+1) Imports settings + database Base/engine
+2) Imports routers (cart/products)
+3) Calls Base.metadata.create_all(bind=engine)
+   - Creates tables if missing
+   - NOTE: we also provide ecommerce_cart_full.sql for deterministic bootstrapping
+4) Creates FastAPI app (title/version/description)
+5) Adds CORS middleware
+6) Includes routers
+
+
+9) Routers / endpoint behavior
+------------------------------
+
+9.1) Products router
+File: C:\Advance Project\ecommerce_cart\app\routers\products.py
+Endpoints:
+- GET  /api/products
+  - Returns active products (is_active = TRUE)
+  - Supports pagination (skip, limit)
+
+- POST /api/products
+  - Creates a product row
+
+- GET  /api/products/{product_id}
+  - Returns one product by id (404 if not found)
+
+
+9.2) Cart router
+File: C:\Advance Project\ecommerce_cart\app\routers\cart.py
+User identity:
+- X-User-Id header
+- Fallback to guest_user if missing/blank
+
+Helpers:
+- _get_or_create_active_cart(db, user_id)
+  - Reads active cart by user_id
+  - Creates one if missing
+
+- _get_active_product(db, product_id)
+  - Finds active product by id
+  - Raises 404 if missing
+
+- _get_cart_item(db, cart_id, product_id)
+  - Finds a cart item row for a cart/product
+
+Endpoints:
+- GET /api/cart
+  - Returns the active cart for X-User-Id (creates if missing)
+
+- POST /api/cart/items
+  - Validates product exists + active
+  - Validates stock >= requested quantity
+  - Creates cart item or increments quantity
+  - Returns updated cart with totals
+
+- PUT /api/cart/items/{product_id}
+  - Sets the exact quantity for an existing item
+  - Returns updated cart
+
+- DELETE /api/cart/items/{product_id}
+  - Removes the item row if present
+  - Returns updated cart
+
+- DELETE /api/cart
+  - Clears all items from the active cart
+  - Returns MessageResponse
+
+SonarQube notes:
+- Dependencies use Annotated[...] patterns to satisfy Sonar rules.
+- response_model duplication is avoided by relying on return type hints.
+
+
+10) End-to-end run steps
+------------------------
+1) Create and activate venv
+   - python -m venv venv
+   - venv\Scripts\activate
+
+2) Install dependencies
+   - pip install -r requirements.txt
+
+3) Configure database
+   - Ensure MySQL is running
+   - Ensure .env points to ecommerce_db (already configured)
+
+4) Create schema + seed
+   - mysql -u root -pRoot -e "source C:/Advance Project/ecommerce_cart/ecommerce_cart_full.sql"
+
+5) Start server
+   - uvicorn app.main:app --reload
+
+Swagger UI:
+- http://127.0.0.1:8000/docs
+
+
+11) Testing examples (PowerShell)
+---------------------------------
+Health:
+- curl http://127.0.0.1:8000/
+
+List products:
+- curl http://127.0.0.1:8000/api/products
+
+Get cart:
+- curl -H "X-User-Id: user_123" http://127.0.0.1:8000/api/cart
+
+Add item (product_id 1):
+- curl -X POST http://127.0.0.1:8000/api/cart/items `
+    -H "Content-Type: application/json" `
+    -H "X-User-Id: user_123" `
+    -d '{"product_id":1,"quantity":2}'
+
+Update quantity:
+- curl -X PUT http://127.0.0.1:8000/api/cart/items/1 `
+    -H "Content-Type: application/json" `
+    -H "X-User-Id: user_123" `
+    -d '{"quantity":5}'
+
+Remove item:
+- curl -X DELETE -H "X-User-Id: user_123" http://127.0.0.1:8000/api/cart/items/1
+
+Clear cart:
+- curl -X DELETE -H "X-User-Id: user_123" http://127.0.0.1:8000/api/cart
+
+
+12) Common issues + fixes
+-------------------------
+A) Foreign key errors during startup
+- Cause: using the wrong database name where tables already exist with incompatible types.
+- Fix: ensure DB_NAME=ecommerce_db and bootstrap schema from ecommerce_cart_full.sql.
+
+B) No products returned
+- Run ecommerce_cart_full.sql again (seed is idempotent).
+
+C) SonarQube warnings about FastAPI dependencies
+- Use Annotated[...] style for Depends/Query/Path/Header.
+
+
+13) Next improvements (optional)
+--------------------------------
+- Proper auth (JWT) instead of X-User-Id
+- Stock reservation per cart item (transaction + decrement stock)
+- Alembic migrations for schema versioning
+- Tests (pytest) + CI
