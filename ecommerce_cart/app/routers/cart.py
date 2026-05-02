@@ -11,12 +11,13 @@ from app.core.database import get_db
 from app.models.models import Cart, CartItem, Product
 from app.schemas.schemas import (
     AddCartItemRequest,
+    ApiEnvelope,
     CartResponse,
     MessageResponse,
     UpdateCartItemRequest,
 )
 
-router = APIRouter(prefix="/api/cart", tags=["Cart"])
+router = APIRouter(prefix="/api/v1/cart", tags=["Cart"])
 
 
 DEFAULT_USER_ID = "guest_user"
@@ -41,6 +42,37 @@ def get_active_user_id(
 
 
 UserId = Annotated[str, Depends(get_active_user_id)]
+
+
+def _success(message: str, data):
+    return ApiEnvelope(success=True, message=message, data=data, error=None)
+
+
+def _cart_payload(cart: CartResponse) -> dict:
+    return {
+        "items": [
+            {
+                "id": str(item.id),
+                "product_id": str(item.product_id),
+                "quantity": item.quantity,
+                "product": {
+                    "id": str(item.product.id),
+                    "name": item.product.name,
+                    "price": item.product.price,
+                    "image_url": item.product.image_url,
+                },
+            }
+            for item in cart.items
+        ],
+        "summary": {
+            "subtotal": cart.total_price,
+            "discount": 0,
+            "shipping": 0,
+            "tax": 0,
+            "total": cart.total_price,
+            "currency": "INR",
+        },
+    }
 
 
 def _get_or_create_active_cart(db: Session, user_id: str) -> Cart:
@@ -87,13 +119,14 @@ def _get_cart_item(db: Session, cart_id: int, product_id: int) -> CartItem | Non
     )
 
 
-@router.get("", summary="Fetch the active cart")
+@router.get("", response_model=ApiEnvelope, summary="Fetch the active cart")
 def get_cart(db: DbSession, user_id: UserId) -> CartResponse:
     cart = _get_or_create_active_cart(db, user_id)
-    return CartResponse.from_orm_with_totals(cart)
+    response = CartResponse.from_orm_with_totals(cart)
+    return _success("Cart fetched successfully.", _cart_payload(response))
 
 
-@router.post("/items", status_code=status.HTTP_201_CREATED, summary="Add a product to the cart")
+@router.post("/items", response_model=ApiEnvelope, status_code=status.HTTP_201_CREATED, summary="Add a product to the cart")
 def add_item(payload: AddCartItemRequest, db: DbSession, user_id: UserId) -> CartResponse:
     product = _get_active_product(db, payload.product_id)
 
@@ -117,10 +150,11 @@ def add_item(payload: AddCartItemRequest, db: DbSession, user_id: UserId) -> Car
 
     db.commit()
     db.refresh(cart)
-    return CartResponse.from_orm_with_totals(cart)
+    response = CartResponse.from_orm_with_totals(cart)
+    return _success("Item added to cart successfully.", _cart_payload(response))
 
 
-@router.put("/items/{product_id}", summary="Set the exact quantity for a cart item")
+@router.patch("/items/{product_id}", response_model=ApiEnvelope, summary="Set the exact quantity for a cart item")
 def update_item(product_id: int, payload: UpdateCartItemRequest, db: DbSession, user_id: UserId) -> CartResponse:
     product = _get_active_product(db, product_id)
     if product.stock < payload.quantity:
@@ -135,10 +169,11 @@ def update_item(product_id: int, payload: UpdateCartItemRequest, db: DbSession, 
     item.quantity = payload.quantity
     db.commit()
     db.refresh(cart)
-    return CartResponse.from_orm_with_totals(cart)
+    response = CartResponse.from_orm_with_totals(cart)
+    return _success("Cart updated successfully.", _cart_payload(response))
 
 
-@router.delete("/items/{product_id}", summary="Remove a specific item")
+@router.delete("/items/{product_id}", response_model=ApiEnvelope, summary="Remove a specific item")
 def remove_item(product_id: int, db: DbSession, user_id: UserId) -> CartResponse:
     cart = _get_or_create_active_cart(db, user_id)
     item = _get_cart_item(db, cart.id, product_id)
@@ -149,10 +184,11 @@ def remove_item(product_id: int, db: DbSession, user_id: UserId) -> CartResponse
     db.delete(item)
     db.commit()
     db.refresh(cart)
-    return CartResponse.from_orm_with_totals(cart)
+    response = CartResponse.from_orm_with_totals(cart)
+    return _success("Item removed from cart successfully.", _cart_payload(response))
 
 
-@router.delete("", summary="Clear all items from the active cart")
+@router.delete("", response_model=ApiEnvelope, summary="Clear all items from the active cart")
 def clear_cart(db: DbSession, user_id: UserId) -> MessageResponse:
     cart = (
         db.query(Cart)
@@ -163,9 +199,9 @@ def clear_cart(db: DbSession, user_id: UserId) -> MessageResponse:
         .first()
     )
     if cart is None:
-        return MessageResponse(message=MESSAGE_CART_ALREADY_EMPTY)
+        return _success(MESSAGE_CART_ALREADY_EMPTY, {"items": [], "summary": {"subtotal": 0, "discount": 0, "shipping": 0, "tax": 0, "total": 0, "currency": "INR"}})
 
     db.query(CartItem).filter(CartItem.cart_id == cart.id).delete(synchronize_session=False)
     db.commit()
-    return MessageResponse(message=MESSAGE_CART_CLEARED)
+    return _success(MESSAGE_CART_CLEARED, {"items": [], "summary": {"subtotal": 0, "discount": 0, "shipping": 0, "tax": 0, "total": 0, "currency": "INR"}})
 

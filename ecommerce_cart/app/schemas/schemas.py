@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -97,3 +97,10 @@ class MessageResponse(BaseModel):
 class ErrorResponse(BaseModel):
     detail: str
     success: bool = False
+
+
+class ApiEnvelope(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Any] = None
+    error: Optional[dict] = None

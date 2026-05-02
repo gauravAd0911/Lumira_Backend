@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.database import engine, Base
@@ -46,10 +48,66 @@ app.include_router(cart.router)
 app.include_router(products.router)
 
 
+def _error_payload(*, code: str, message: str, details=None):
+    return {
+        "success": False,
+        "message": message,
+        "data": None,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or [],
+        },
+    }
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    detail = exc.detail
+    if isinstance(detail, dict) and {"success", "message", "error"} <= set(detail.keys()):
+        payload = detail
+    else:
+        code_map = {
+            400: "BAD_REQUEST",
+            401: "UNAUTHORIZED",
+            403: "FORBIDDEN",
+            404: "NOT_FOUND",
+            409: "CONFLICT",
+        }
+        payload = _error_payload(
+            code=code_map.get(exc.status_code, "SERVER_ERROR"),
+            message=str(detail),
+        )
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=_error_payload(
+            code="VALIDATION_ERROR",
+            message="Please correct the highlighted details.",
+            details=[
+                {
+                    "field": str(error.get("loc", ["request"])[-1]),
+                    "message": error.get("msg", "Invalid value."),
+                }
+                for error in exc.errors()
+            ],
+        ),
+    )
+
+
 @app.get("/", tags=["Health"])
 def health_check():
     return {
-        "status": "ok",
-        "app": settings.APP_NAME,
-        "version": settings.APP_VERSION,
+        "success": True,
+        "message": "Cart service is healthy.",
+        "data": {
+            "status": "ok",
+            "app": settings.APP_NAME,
+            "version": settings.APP_VERSION,
+        },
+        "error": None,
     }

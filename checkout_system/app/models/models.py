@@ -167,10 +167,66 @@ class CheckoutSession(Base):
     user_id = Column(String(100))
     guest_token = Column(String(512))
     address_id = Column(String(100))
+    shipping_address = Column(JSON, nullable=True)
     items = Column(JSON, nullable=False, default=list)
     pricing = Column(JSON, nullable=False, default=dict)
     status = Column(String(30), nullable=False, default="created")
     expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CheckoutOrder(Base):
+    __tablename__ = "checkout_orders"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    checkout_session_id = Column(String(36), ForeignKey("checkout_sessions.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(String(100))
+    guest_token = Column(String(512))
+    address_id = Column(String(100))
+    shipping_address = Column(JSON, nullable=True)
+    payment_id = Column(String(100), nullable=False)
+    items = Column(JSON, nullable=False, default=list)
+    subtotal = Column(Numeric(12, 2), nullable=False)
+    shipping_amount = Column(Numeric(12, 2), nullable=False, default=0)
+    tax_amount = Column(Numeric(12, 2), nullable=False, default=0)
+    discount_amount = Column(Numeric(12, 2), nullable=False, default=0)
+    total_amount = Column(Numeric(12, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="INR")
+    status = Column(String(30), nullable=False, default="pending")
+    payment_status = Column(String(30), nullable=False, default="unpaid")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class InventoryReservation(Base):
+    __tablename__ = "inventory_reservations"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    reservation_group_id = Column(String(36), index=True, nullable=False)
+    product_id = Column(String(36), ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False, default="active")
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ServiceablePincode(Base):
+    __tablename__ = "serviceable_pincodes"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    pincode = Column(String(6), unique=True, index=True, nullable=False)
+    city = Column(String(100), nullable=False)
+    zone = Column(String(30), nullable=False, default="tier2")
+    is_active = Column(Boolean, nullable=False, default=True)
+    cod_available = Column(Boolean, nullable=False, default=True)
+    prepaid_available = Column(Boolean, nullable=False, default=True)
+    eta_days_min = Column(Integer, nullable=False, default=3)
+    eta_days_max = Column(Integer, nullable=False, default=5)
+    shipping_fee_override = Column(Numeric(12, 2), nullable=True)
+    blocked_reason = Column(Text, nullable=True)
+    updated_by = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

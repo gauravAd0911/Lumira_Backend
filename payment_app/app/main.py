@@ -4,9 +4,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.database import Base, engine
@@ -46,6 +47,51 @@ app.add_middleware(
 app.include_router(payments_legacy_router, prefix="/payment")
 app.include_router(payments_api_router, prefix="/api/v1/payments")
 
+
+def _error_payload(*, code: str, message: str, details=None):
+    return {
+        "success": False,
+        "message": message,
+        "data": None,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or [],
+        },
+    }
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    detail = exc.detail
+    if isinstance(detail, dict) and {"success", "message", "error"} <= set(detail.keys()):
+        payload = detail
+    else:
+        payload = _error_payload(
+            code={400: "BAD_REQUEST", 404: "NOT_FOUND", 409: "CONFLICT", 502: "PAYMENT_PROVIDER_ERROR"}.get(exc.status_code, "SERVER_ERROR"),
+            message=str(detail),
+        )
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=_error_payload(
+            code="VALIDATION_ERROR",
+            message="Please correct the highlighted details.",
+            details=[
+                {
+                    "field": str(error.get("loc", ["request"])[-1]),
+                    "message": error.get("msg", "Invalid value."),
+                }
+                for error in exc.errors()
+            ],
+        ),
+    )
+
+
 static_path = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_path), name="static")
 
@@ -55,4 +101,9 @@ def home():
     index = os.path.join(static_path, "index.html")
     if os.path.exists(index):
         return FileResponse(index)
-    return {"status": "ok", "docs": "/docs"}
+    return {
+        "success": True,
+        "message": "Payment service is healthy.",
+        "data": {"status": "ok", "docs": "/docs"},
+        "error": None,
+    }

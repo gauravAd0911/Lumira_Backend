@@ -167,6 +167,17 @@ class ProductOut(BaseModel):
     class Config: from_attributes = True
 
 
+class CheckoutAddressIn(AddressIn):
+    id: Optional[str] = None
+
+
+class CheckoutItemOut(BaseModel):
+    product_id: str
+    name: str
+    quantity: int
+    unit_price: Decimal
+
+
 class CheckoutItemIn(BaseModel):
     product_id: str
     quantity: int = Field(..., ge=1, le=100)
@@ -175,6 +186,7 @@ class CheckoutItemIn(BaseModel):
 class CheckoutValidateIn(BaseModel):
     items: List[CheckoutItemIn] = Field(..., min_length=1)
     address_id: Optional[str] = None
+    address: Optional[CheckoutAddressIn] = None
     guest_token: Optional[str] = None
 
 
@@ -188,6 +200,7 @@ class CheckoutPricingOut(BaseModel):
     subtotal: Decimal
     discount: Decimal = Decimal("0")
     shipping: Decimal = Decimal("0")
+    tax: Decimal = Decimal("0")
     total: Decimal
     currency: str = "INR"
 
@@ -197,6 +210,7 @@ class CheckoutValidateOut(BaseModel):
     delivery_valid: bool
     inventory_valid: bool
     pricing: CheckoutPricingOut
+    items: List[CheckoutItemOut]
     issues: List[CheckoutIssueOut]
 
 
@@ -205,8 +219,80 @@ class CheckoutSessionIn(CheckoutValidateIn):
 
 
 class CheckoutSessionOut(BaseModel):
-    checkout_session_id: str
+    checkoutId: str
     reservation_required: bool = True
-    payable_amount: Decimal
+    pricing: CheckoutPricingOut
     currency: str = "INR"
     expires_at: datetime
+    items: List[CheckoutItemOut]
+    address_id: Optional[str] = None
+
+
+class DeliveryCheckItemIn(BaseModel):
+    product_id: str
+    quantity: int = Field(..., ge=1, le=100)
+
+
+class DeliveryCheckIn(BaseModel):
+    pincode: str = Field(..., min_length=6, max_length=6)
+    items: List[DeliveryCheckItemIn] = Field(default_factory=list)
+
+
+class DeliveryCheckOut(BaseModel):
+    is_serviceable: bool
+    eta_days_min: int = 0
+    eta_days_max: int = 0
+    shipping_fee: Decimal = Decimal("0")
+    message: str
+    unavailable_items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ServiceablePincodeIn(BaseModel):
+    pincode: str = Field(..., min_length=6, max_length=6)
+    city: str = Field(..., min_length=1, max_length=100)
+    zone: str = Field(..., min_length=1, max_length=30)
+    is_active: bool = True
+    cod_available: bool = True
+    prepaid_available: bool = True
+    eta_days_min: int = Field(default=3, ge=0)
+    eta_days_max: int = Field(default=5, ge=0)
+    shipping_fee_override: Optional[Decimal] = None
+    blocked_reason: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class ServiceablePincodeOut(ServiceablePincodeIn):
+    id: str
+
+    class Config:
+        from_attributes = True
+
+
+class InventoryValidateIn(BaseModel):
+    items: List[CheckoutItemIn] = Field(..., min_length=1)
+
+
+class InventoryIssueOut(BaseModel):
+    product_id: str
+    available_quantity: int
+    requested_quantity: int
+    message: str
+    stock_state: str
+
+
+class InventoryValidateOut(BaseModel):
+    is_available: bool
+    issues: List[InventoryIssueOut]
+
+
+class InventoryReservationOut(BaseModel):
+    reservation_id: str
+    expires_at: datetime
+    items: List[CheckoutItemIn]
+
+
+class ApiEnvelope(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[Dict[str, Any]] = None

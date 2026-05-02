@@ -35,6 +35,9 @@ class OrderRepository:
     def get_order(self, order_id):
         return self.db.query(Order).filter(Order.id == order_id).first()
 
+    def get_order_by_number(self, order_number):
+        return self.db.query(Order).filter(Order.order_number == order_number).first()
+
     def get_order_for_user(self, order_id, user_id):
         query = self.db.query(Order).filter(Order.user_id == user_id)
         if str(order_id).isdigit():

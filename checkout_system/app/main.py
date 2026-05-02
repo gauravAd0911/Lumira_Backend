@@ -1,12 +1,16 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.routers import checkout, guest_checkout, guest_orders, products
+from app.routers.delivery import router as delivery_router, seed_serviceable_pincodes
+from app.routers.inventory import router as inventory_router
 
 cfg = get_settings()
 
@@ -40,11 +44,64 @@ app.include_router(guest_checkout.router)
 app.include_router(guest_orders.router)
 app.include_router(products.router)
 app.include_router(checkout.router)
+app.include_router(delivery_router)
+app.include_router(inventory_router)
+
+
+def _error_payload(*, code: str, message: str, details=None):
+    return {
+        "success": False,
+        "message": message,
+        "data": None,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or [],
+        },
+    }
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    detail = exc.detail
+    if isinstance(detail, dict) and {"success", "message", "error"} <= set(detail.keys()):
+        payload = detail
+    else:
+        payload = _error_payload(
+            code={400: "BAD_REQUEST", 404: "NOT_FOUND", 409: "CONFLICT"}.get(exc.status_code, "SERVER_ERROR"),
+            message=str(detail),
+        )
+    return JSONResponse(status_code=exc.status_code, content=payload)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=_error_payload(
+            code="VALIDATION_ERROR",
+            message="Please correct the highlighted details.",
+            details=[
+                {
+                    "field": str(error.get("loc", ["request"])[-1]),
+                    "message": error.get("msg", "Invalid value."),
+                }
+                for error in exc.errors()
+            ],
+        ),
+    )
 
 
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        seed_serviceable_pincodes(db)
+    finally:
+        db.close()
 
 _static = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(_static):
@@ -53,7 +110,7 @@ if os.path.isdir(_static):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"success": True, "message": "Checkout service is healthy.", "data": {"status": "ok"}, "error": None}
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)

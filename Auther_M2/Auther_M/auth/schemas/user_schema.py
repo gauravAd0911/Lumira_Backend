@@ -2,66 +2,76 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
-class SignupInitiateRequest(BaseModel):
+class ApiModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SignupInitiateRequest(ApiModel):
     full_name: str = Field(alias="fullName", min_length=1, max_length=255)
     email: EmailStr
     phone: str = Field(min_length=8, max_length=25)
     password: str = Field(min_length=6, max_length=255)
 
 
-class SignupInitiateResponse(BaseModel):
+class SignupInitiateResponse(ApiModel):
     context_id: str = Field(alias="context_id")
     message: str
     otp_expiry_seconds: int
 
 
-class SignupVerifyRequest(BaseModel):
+class SignupVerifyRequest(ApiModel):
     context_id: str = Field(alias="contextId")
     otp: str = Field(min_length=4, max_length=10)
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(ApiModel):
     identifier: str
     password: str
 
 
-class ForgotInitiateRequest(BaseModel):
+class ForgotInitiateRequest(ApiModel):
     identifier: str
 
 
-class ForgotInitiateResponse(BaseModel):
+class ForgotInitiateResponse(ApiModel):
     context_id: str
     message: str
     otp_expiry_seconds: int
 
 
-class ForgotVerifyRequest(BaseModel):
+class ForgotVerifyRequest(ApiModel):
     context_id: str = Field(alias="contextId")
     otp: str = Field(min_length=4, max_length=10)
 
 
-class ForgotVerifyResponse(BaseModel):
+class ForgotVerifyResponse(ApiModel):
     reset_token: str
     reset_token_expiry_seconds: int
 
 
-class PasswordResetRequest(BaseModel):
+class PasswordResetRequest(ApiModel):
     reset_token: str
     new_password: str
 
 
-class RefreshTokenRequest(BaseModel):
+class RefreshTokenRequest(ApiModel):
     refresh_token: str
 
 
-class LogoutRequest(BaseModel):
+class LogoutRequest(ApiModel):
     refresh_token: str
 
 
-class UserOut(BaseModel):
+class UpdateProfileRequest(ApiModel):
+    full_name: str = Field(alias="fullName", min_length=1, max_length=255)
+    email: EmailStr
+    phone: str = Field(min_length=8, max_length=25)
+
+
+class UserOut(ApiModel):
     id: str
     full_name: Optional[str] = None
     email: str
@@ -69,18 +79,19 @@ class UserOut(BaseModel):
     role: str
 
 
-class TokenPair(BaseModel):
+class TokenPair(ApiModel):
     access_token: str
     refresh_token: str
 
 
-class AuthResponse(BaseModel):
+class AuthResponse(ApiModel):
     access_token: str
     refresh_token: str
     user: UserOut
 
 
-class APIResponse(BaseModel):
+class APIResponse(ApiModel):
     success: bool
     message: str
     data: Optional[dict] = None
+    error: Optional[dict] = None

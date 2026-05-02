@@ -18,7 +18,7 @@ class OrderService:
         self.tracking_repo = TrackingRepository(db)
         self.notification = NotificationService()
 
-    def finalize_order(self, *, data: Dict[str, Any], user_id: int) -> Dict[str, Any]:
+    def finalize_order(self, *, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """
         Finalize order after validation.
 
@@ -118,11 +118,16 @@ class OrderService:
         if calculated_item_count != data["item_count"]:
             raise ValueError("Item count does not match order items")
 
-        calculated_total = sum(
+        subtotal = sum(
             (self._item_value(item, "price") or 0) * (self._item_value(item, "quantity") or 0)
             for item in items
         )
-        if round(float(calculated_total), 2) != round(float(data["total"]), 2):
+        shipping_amount = float(data.get("shipping_amount") or 0)
+        discount_amount = float(data.get("discount_amount") or 0)
+        tax_amount = float(data.get("tax_amount") or 0)
+
+        expected_total = subtotal + shipping_amount + tax_amount - discount_amount
+        if round(float(expected_total), 2) != round(float(data["total"]), 2):
             raise ValueError("Order total does not match order items")
 
     @staticmethod

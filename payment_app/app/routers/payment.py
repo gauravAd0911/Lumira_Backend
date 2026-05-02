@@ -1,14 +1,8 @@
-"""Payment APIs (Razorpay integration).
-
-Routes are mounted under both:
-- `/payment` (legacy demo UI)
-- `/api/v1/payments` (recommended API)
-"""
+"""Payment APIs (Razorpay integration)."""
 
 from __future__ import annotations
 
-from typing import Any
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
@@ -20,7 +14,6 @@ from app.schemas.payment import (
     CreatePaymentOrderResponse,
     PaymentStatusResponse,
     VerifyPaymentPayload,
-    VerifyPaymentResponse,
 )
 from app.services.payment_service import PaymentService
 
@@ -28,13 +21,20 @@ legacy_router = APIRouter()
 api_router = APIRouter()
 
 
+def _success(message: str, data):
+    return {
+        "success": True,
+        "message": message,
+        "data": data,
+        "error": None,
+    }
+
+
 @legacy_router.get("/create-order")
 def create_order_legacy(
     user_id: Annotated[int, Query(..., ge=1)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Legacy endpoint used by `app/static/index.html`."""
-
     service = PaymentService(db)
     payment = service.create_order_from_cart(user_id=user_id, currency="INR", idempotency_key=None)
     if not payment.provider_order_id:
@@ -56,8 +56,6 @@ def verify_legacy(
     payload: VerifyPaymentPayload,
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Legacy verify endpoint returning the shape expected by the demo UI."""
-
     service = PaymentService(db)
     payment, order = service.verify_razorpay_payment(
         payment_reference=None,
@@ -71,14 +69,12 @@ def verify_legacy(
     }
 
 
-@api_router.post("/orders", response_model=CreatePaymentOrderResponse, status_code=status.HTTP_201_CREATED)
+@api_router.post("/orders", status_code=status.HTTP_201_CREATED)
 def create_payment_order(
     payload: CreatePaymentOrderPayload,
     db: Annotated[Session, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
-    """Recommended: create a payment order using an idempotency key."""
-
     service = PaymentService(db)
     payment = service.create_razorpay_order(
         amount_minor=payload.amount,
@@ -91,7 +87,7 @@ def create_payment_order(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Provider order could not be created. Retry safely with the same idempotency key.",
         )
-    return CreatePaymentOrderResponse(
+    response = CreatePaymentOrderResponse(
         payment_reference=payment.payment_reference,
         provider=payment.provider.value,
         razorpay_order_id=payment.provider_order_id,
@@ -99,6 +95,7 @@ def create_payment_order(
         currency=payment.currency,
         key_id=RAZORPAY_KEY,
     )
+    return _success("Payment order created successfully.", response.model_dump())
 
 
 @api_router.post("/intent", status_code=status.HTTP_201_CREATED)
@@ -107,19 +104,15 @@ def create_payment_intent(
     db: Annotated[Session, Depends(get_db)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
-    """Frontend-compatible payment intent endpoint.
-
-    Web currently sends Razorpay-style `amount` in minor units and expects
-    `id` to be the Razorpay order id. Mobile sends an app payment intent payload
-    and expects `id` to be the backend payment reference. Both are backed by the
-    same stored Payment row.
-    """
-
     raw_amount = payload.get("amount")
     if not isinstance(raw_amount, (int, float)) or raw_amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment amount must be greater than zero.")
 
-    is_mobile_intent = "orderReference" in payload or "methodLabel" in payload or "reservationId" in payload
+    is_mobile_intent = (
+        "orderReference" in payload
+        or "methodLabel" in payload
+        or "reservationId" in payload
+    )
     amount_minor = int(round(float(raw_amount) * 100)) if is_mobile_intent else int(raw_amount)
     currency = str(payload.get("currency") or "INR").upper()
     metadata = {
@@ -144,23 +137,29 @@ def create_payment_intent(
         )
 
     if is_mobile_intent:
-        return {
-            "id": payment.payment_reference,
-            "amount": float(raw_amount),
-            "provider": payment.provider.value,
-            "status": "created",
-            "gatewayOrderId": payment.provider_order_id,
-            "currency": payment.currency,
-        }
+        return _success(
+            "Payment intent created successfully.",
+            {
+                "id": payment.payment_reference,
+                "amount": float(raw_amount),
+                "provider": payment.provider.value,
+                "status": "created",
+                "gatewayOrderId": payment.provider_order_id,
+                "currency": payment.currency,
+            },
+        )
 
-    return {
-        "id": payment.provider_order_id,
-        "payment_reference": payment.payment_reference,
-        "provider": payment.provider.value,
-        "amount": payment.amount_minor,
-        "currency": payment.currency,
-        "key_id": RAZORPAY_KEY,
-    }
+    return _success(
+        "Payment intent created successfully.",
+        {
+            "id": payment.provider_order_id,
+            "payment_reference": payment.payment_reference,
+            "provider": payment.provider.value,
+            "amount": payment.amount_minor,
+            "currency": payment.currency,
+            "key_id": RAZORPAY_KEY,
+        },
+    )
 
 
 @api_router.post("/verify")
@@ -168,8 +167,6 @@ def verify_payment(
     payload: dict[str, Any],
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Recommended: verify provider signature on the backend."""
-
     gateway_result = payload.get("gatewayResult") or {}
     payment_reference = payload.get("payment_reference") or payload.get("paymentReference") or payload.get("intentId")
     razorpay_order_id = (
@@ -201,32 +198,32 @@ def verify_payment(
         razorpay_signature=razorpay_signature,
     )
     verified = payment.status.value == "verified"
-    return {
-        "payment_reference": payment.payment_reference,
-        "paymentReference": payment.payment_reference,
-        "status": "success" if payload.get("intentId") or payload.get("gatewayResult") else payment.status.value,
-        "provider_payment_id": payment.provider_payment_id,
-        "paymentId": payment.provider_payment_id or payment.payment_reference,
-        "verified": verified,
-        "verifiedAt": payment.verified_at.isoformat() if payment.verified_at else None,
-        "mode": "live",
-        "message": "Payment verified successfully." if verified else "Payment verification failed.",
-        "order_id": order.id if order else None,
-        "order_number": order.order_number if order else None,
-    }
+    return _success(
+        "Payment verified successfully." if verified else "Payment verification failed.",
+        {
+            "payment_reference": payment.payment_reference,
+            "paymentReference": payment.payment_reference,
+            "status": "success" if payload.get("intentId") or payload.get("gatewayResult") else payment.status.value,
+            "provider_payment_id": payment.provider_payment_id,
+            "paymentId": payment.provider_payment_id or payment.payment_reference,
+            "verified": verified,
+            "verifiedAt": payment.verified_at.isoformat() if payment.verified_at else None,
+            "mode": "live",
+            "order_id": order.id if order else None,
+            "order_number": order.order_number if order else None,
+        },
+    )
 
 
-@api_router.get("/{payment_reference}/status", response_model=PaymentStatusResponse)
+@api_router.get("/{payment_reference}/status")
 def get_payment_status(
     payment_reference: str,
     db: Annotated[Session, Depends(get_db)],
-    reconcile: Annotated[
-        bool, Query(description="Reconcile by querying provider (best-effort).")
-    ] = False,
+    reconcile: Annotated[bool, Query(description="Reconcile by querying provider (best-effort).")] = False,
 ):
     service = PaymentService(db)
     payment = service.reconcile_payment(payment_reference) if reconcile else service.get_payment_by_reference(payment_reference)
-    return PaymentStatusResponse(
+    response = PaymentStatusResponse(
         payment_reference=payment.payment_reference,
         provider=payment.provider.value,
         status=payment.status.value,
@@ -238,6 +235,7 @@ def get_payment_status(
         failed_at=payment.failed_at,
         updated_at=payment.updated_at,
     )
+    return _success("Payment status fetched successfully.", response.model_dump(mode="json"))
 
 
 @api_router.post("/webhooks/razorpay")
@@ -253,7 +251,7 @@ async def razorpay_webhook(
     except Exception:
         payload = {}
     PaymentService(db).store_and_process_razorpay_webhook(raw_body=raw_body, signature=signature, payload=payload)
-    return {"message": "ok"}
+    return _success("Webhook processed successfully.", {"message": "ok"})
 
 
 __all__ = ["api_router", "legacy_router"]

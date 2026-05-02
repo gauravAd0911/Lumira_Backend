@@ -22,6 +22,25 @@ class Role(str, enum.Enum):
     VENDOR = "vendor"
 
 
+PUBLIC_ROLE_MAP = {
+    Role.ADMIN: "admin",
+    Role.CONSUMER: "customer",
+    Role.VENDOR: "employee",
+}
+
+
+def to_public_role(role: Role | str) -> str:
+    if isinstance(role, Role):
+        return PUBLIC_ROLE_MAP.get(role, role.value)
+
+    normalized = str(role).strip().lower()
+    if normalized == "consumer":
+        return "customer"
+    if normalized == "vendor":
+        return "employee"
+    return normalized
+
+
 class OtpPurpose(str, enum.Enum):
     """OTP purposes."""
 
