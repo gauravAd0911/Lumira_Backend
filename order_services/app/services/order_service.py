@@ -38,6 +38,7 @@ class OrderService:
             order = self.order_repo.create_order(
                 user_id=user_id,
                 order_number=order_number,
+                guest_token=data.get("guest_token"),
                 total=data["total"],
                 payment_method=data["payment_method"],
                 shipping_address=data["shipping_address"],

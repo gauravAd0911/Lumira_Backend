@@ -11,6 +11,7 @@ class Order(Base):
     id = Column(Integer, primary_key=True)
     order_number = Column(String(50), unique=True, nullable=False)
     user_id = Column(String(100), nullable=False)
+    guest_token = Column(String(255), nullable=True, index=True)
     total = Column(Float, nullable=False)
     status = Column(String(50), nullable=False)
     payment_method = Column(String(50), nullable=False)

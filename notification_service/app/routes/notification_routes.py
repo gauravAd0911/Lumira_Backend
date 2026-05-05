@@ -9,8 +9,14 @@ from app.schemas.notification_schema import (
     DeviceRegister,
     NotificationCreate,
     NotificationResponse,
+    APIResponse,
+    ErrorDetail,
 )
 from app.services.notification_service import NotificationService
+from app.services.email_service import EmailService
+from app.services.whatsapp_service import WhatsAppService
+from app.services.twilio_service import TwilioService
+from app.templates.email_templates import EmailTemplates
 
 
 router = APIRouter(
@@ -41,7 +47,7 @@ DBSession = Annotated[Session, Depends(get_db)]
 # Device APIs
 # -------------------------------
 @router.post("/devices/register", status_code=status.HTTP_201_CREATED)
-def register_device(payload: DeviceRegister, db: DBSession) -> dict:
+def register_device(payload: DeviceRegister, db: DBSession):
     """
     Register a user device for notifications.
     """
@@ -54,14 +60,15 @@ def register_device(payload: DeviceRegister, db: DBSession) -> dict:
     db.commit()
     db.refresh(device)
 
-    return {
-        "message": "Device registered successfully",
-        "device_id": device.id,
-    }
+    return APIResponse(
+        success=True,
+        message="Device registered successfully",
+        data={"device_id": device.id}
+    )
 
 
 @router.delete("/devices/{device_id}", status_code=status.HTTP_200_OK)
-def delete_device(device_id: int, db: DBSession) -> dict:
+def delete_device(device_id: int, db: DBSession):
     """
     Remove a registered device.
     """
@@ -70,43 +77,62 @@ def delete_device(device_id: int, db: DBSession) -> dict:
     if not device:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Device not found",
+            detail={
+                "success": False,
+                "message": "Device not found",
+                "error": {
+                    "code": "DEVICE_NOT_FOUND",
+                    "message": "The specified device does not exist"
+                }
+            }
         )
 
     db.delete(device)
     db.commit()
 
-    return {"message": f"Device {device_id} removed successfully"}
+    return APIResponse(
+        success=True,
+        message=f"Device {device_id} removed successfully"
+    )
 
 
 # -------------------------------
 # Notification APIs
 # -------------------------------
-@router.post("", response_model=NotificationResponse, status_code=status.HTTP_201_CREATED)
-def create_notification(payload: NotificationCreate, db: DBSession) -> NotificationResponse:
+@router.post("", status_code=status.HTTP_201_CREATED)
+def create_notification(payload: NotificationCreate, db: DBSession):
     """
     Create a notification for a user.
     """
-    return NotificationService.create_notification(
+    notification = NotificationService.create_notification(
         db=db,
         user_id=payload.user_id,
         title=payload.title,
         message=payload.message,
         type_=payload.type,
     )
+    return APIResponse(
+        success=True,
+        message="Notification created successfully",
+        data=notification
+    )
 
 
-@router.get("", response_model=List[NotificationResponse])
-def get_notifications(user_id: int, db: DBSession) -> List[NotificationResponse]:
+@router.get("")
+def get_notifications(user_id: int, db: DBSession):
     """
     Fetch all notifications for a given user.
     """
     notifications = NotificationService.get_notifications(db, user_id)
-    return notifications if notifications else []
+    return APIResponse(
+        success=True,
+        message="Notifications retrieved successfully",
+        data=notifications if notifications else []
+    )
 
 
-@router.patch("/{notification_id}/read", response_model=NotificationResponse)
-def mark_read(notification_id: int, db: DBSession) -> NotificationResponse:
+@router.patch("/{notification_id}/read")
+def mark_read(notification_id: int, db: DBSession):
     """
     Mark a notification as read.
     """
@@ -115,7 +141,209 @@ def mark_read(notification_id: int, db: DBSession) -> NotificationResponse:
     if not notification:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Notification not found",
+            detail={
+                "success": False,
+                "message": "Notification not found",
+                "error": {
+                    "code": "NOTIFICATION_NOT_FOUND",
+                    "message": "The specified notification does not exist"
+                }
+            }
         )
 
-    return notification
+    return APIResponse(
+        success=True,
+        message="Notification marked as read",
+        data=notification
+    )
+
+
+# -------------------------------
+# Email APIs
+# -------------------------------
+@router.post("/email")
+def send_email_notification(payload: dict, db: DBSession):
+    """
+    Send email notification.
+    Expected payload: {
+        "type": "order_confirmation",
+        "recipient": "user@example.com",
+        "data": {
+            "orderId": "order-123",
+            "customerName": "John Doe",
+            "orderTotal": 2740,
+            "items": [...]
+        }
+    }
+    """
+    email_service = EmailService()
+    notification_type = payload.get("type")
+    recipient = payload.get("recipient")
+    data = payload.get("data", {})
+
+    if not recipient:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "Recipient email is required",
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "recipient field is required"
+                }
+            }
+        )
+
+    # Generate email content based on type
+    if notification_type == "order_confirmation":
+        html_content, text_content = EmailTemplates.order_confirmation(
+            customer_name=data.get("customerName", "Valued Customer"),
+            order_id=data.get("orderId", "N/A"),
+            order_total=data.get("orderTotal", 0),
+            items=data.get("items", [])
+        )
+        subject = f"Order Confirmation - {data.get('orderId', 'N/A')}"
+
+    elif notification_type == "order_shipped":
+        html_content, text_content = EmailTemplates.order_shipped(
+            customer_name=data.get("customerName", "Valued Customer"),
+            order_id=data.get("orderId", "N/A"),
+            tracking_number=data.get("trackingNumber")
+        )
+        subject = f"Order Shipped - {data.get('orderId', 'N/A')}"
+
+    elif notification_type == "password_reset":
+        html_content, text_content = EmailTemplates.password_reset(
+            customer_name=data.get("customerName", "Valued Customer"),
+            reset_link=data.get("resetLink", "#")
+        )
+        subject = "Password Reset Request"
+
+    else:
+        # Generic email
+        html_content = f"<h1>{data.get('title', 'Notification')}</h1><p>{data.get('message', '')}</p>"
+        text_content = data.get('message', '')
+        subject = data.get('title', 'Notification from Lumira Skin')
+
+    # Send email
+    success = email_service.send_email(recipient, subject, html_content, text_content)
+
+    if success:
+        return APIResponse(
+            success=True,
+            message="Email sent successfully"
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "success": False,
+                "message": "Failed to send email",
+                "error": {
+                    "code": "EMAIL_SEND_FAILED",
+                    "message": "Email service encountered an error"
+                }
+            }
+        )
+
+
+# -------------------------------
+# WhatsApp APIs
+# -------------------------------
+@router.post("/whatsapp")
+def send_whatsapp_notification(payload: dict, db: DBSession):
+    """
+    Send WhatsApp notification.
+    Expected payload: {
+        "type": "order_update",
+        "recipient": "+919876543210",
+        "message": "Your order has been shipped!"
+    }
+    """
+    whatsapp_service = WhatsAppService()
+    notification_type = payload.get("type")
+    recipient = payload.get("recipient")
+    message = payload.get("message", "")
+
+    if not recipient:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "Recipient phone number is required",
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "recipient field is required"
+                }
+            }
+        )
+
+    # Send WhatsApp message
+    success = whatsapp_service.send_message(recipient, message)
+
+    if success:
+        return APIResponse(
+            success=True,
+            message="WhatsApp message sent successfully"
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "success": False,
+                "message": "Failed to send WhatsApp message",
+                "error": {
+                    "code": "WHATSAPP_SEND_FAILED",
+                    "message": "WhatsApp service encountered an error"
+                }
+            }
+        )
+
+
+# -------------------------------
+# SMS APIs (existing)
+# -------------------------------
+@router.post("/sms")
+def send_sms_notification(payload: dict, db: DBSession):
+    """
+    Send SMS notification via Twilio.
+    Expected payload: {
+        "recipient": "+919876543210",
+        "message": "Your order has been confirmed!"
+    }
+    """
+    twilio_service = TwilioService()
+    recipient = payload.get("recipient")
+    message = payload.get("message", "")
+
+    if not recipient:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "Recipient phone number is required",
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "recipient field is required"
+                }
+            }
+        )
+
+    try:
+        twilio_service.send_sms(recipient, message)
+        return APIResponse(
+            success=True,
+            message="SMS sent successfully"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "success": False,
+                "message": "Failed to send SMS",
+                "error": {
+                    "code": "SMS_SEND_FAILED",
+                    "message": str(e)
+                }
+            }
+        )

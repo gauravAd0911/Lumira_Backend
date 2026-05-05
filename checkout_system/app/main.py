@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.core.database import Base, engine
-from app.routers import checkout, guest_checkout, guest_orders, products
+from app.routers import checkout, guest_checkout, guest_orders
 from app.routers.delivery import router as delivery_router, seed_serviceable_pincodes
 from app.routers.inventory import router as inventory_router
 
@@ -42,7 +42,6 @@ app.add_middleware(
 
 app.include_router(guest_checkout.router)
 app.include_router(guest_orders.router)
-app.include_router(products.router)
 app.include_router(checkout.router)
 app.include_router(delivery_router)
 app.include_router(inventory_router)

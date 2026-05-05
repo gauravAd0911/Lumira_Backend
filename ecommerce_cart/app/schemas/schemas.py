@@ -43,6 +43,10 @@ class UpdateCartItemRequest(BaseModel):
     quantity: int = Field(gt=0, description="Quantity must be at least 1")
 
 
+class MergeCartRequest(BaseModel):
+    guest_token: str = Field(..., min_length=1, description="Guest token used to merge the guest cart.")
+
+
 class CartItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

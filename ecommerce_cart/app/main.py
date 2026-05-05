@@ -21,14 +21,15 @@ A production-ready shopping cart service built with **FastAPI** and **MySQL**.
 ### Cart Endpoints
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/cart` | Fetch current user's cart |
-| `POST` | `/api/cart/items` | Add a product to the cart |
-| `PUT` | `/api/cart/items/{product_id}` | Update item quantity |
-| `DELETE` | `/api/cart/items/{product_id}` | Remove a specific item |
-| `DELETE` | `/api/cart` | Clear entire cart |
+| `GET` | `/api/v1/cart` | Fetch current user's cart |
+| `POST` | `/api/v1/cart/items` | Add a product to the cart |
+| `POST` | `/api/v1/cart/merge` | Merge a guest cart into an authenticated cart |
+| `PATCH` | `/api/v1/cart/items/{product_id}` | Update item quantity |
+| `DELETE` | `/api/v1/cart/items/{product_id}` | Remove a specific item |
+| `DELETE` | `/api/v1/cart` | Clear entire cart |
 
 ### Authentication
-Pass `X-User-Id` header to identify the user (replace with JWT in production).
+Pass `X-User-Id` or `Authorization: Bearer <jwt>` to identify the user. Guest carts use a sanitized `guest_token`.
 """,
     docs_url="/docs",
     redoc_url="/redoc",

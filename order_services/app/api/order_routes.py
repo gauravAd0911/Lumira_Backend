@@ -1,14 +1,9 @@
-import base64
-import hashlib
-import hmac
-import json
-import os
-import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.auth_utils import CurrentUserId, get_active_user_id, get_current_role, resolve_guest_user_id
 from app.core.database import SessionLocal
 from app.schemas.order_schema import FinalizeOrderRequest
 from app.services.order_service import OrderService
@@ -52,58 +47,6 @@ def get_db():
 DBSession = Annotated[Session, Depends(get_db)]
 
 
-def _b64url_decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
-def _decode_hs256_subject(token: str) -> str | None:
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-
-        signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
-        jwt_secret = os.getenv("JWT_SECRET")
-        if not jwt_secret:
-            return None
-        expected_signature = hmac.new(
-            jwt_secret.encode("utf-8"),
-            signing_input,
-            hashlib.sha256,
-        ).digest()
-        actual_signature = _b64url_decode(parts[2])
-        if not hmac.compare_digest(expected_signature, actual_signature):
-            return None
-
-        payload = json.loads(_b64url_decode(parts[1]))
-    except (ValueError, json.JSONDecodeError):
-        return None
-
-    expires_at = payload.get("exp")
-    if isinstance(expires_at, (int, float)) and expires_at < time.time():
-        return None
-    if payload.get("type") not in {None, "access"}:
-        return None
-    subject = payload.get("sub") or payload.get("user_id")
-    return str(subject) if subject else None
-
-
-def get_current_user_id(
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-) -> str:
-    if authorization and authorization.lower().startswith("bearer "):
-        user_id = _decode_hs256_subject(authorization.split(" ", 1)[1].strip())
-        if user_id:
-            return user_id
-
-    if x_user_id and x_user_id.strip():
-        return x_user_id.strip()
-
-    _failure(status.HTTP_401_UNAUTHORIZED, "UNAUTHORIZED", "Authenticated user is required.")
-
-
-CurrentUserId = Annotated[str, Depends(get_current_user_id)]
 
 
 def _resolve_checkout_actor_id(
@@ -111,41 +54,21 @@ def _resolve_checkout_actor_id(
     authorization: str | None,
     x_user_id: str | None,
 ) -> str:
-    if authorization and authorization.lower().startswith("bearer "):
-        user_id = _decode_hs256_subject(authorization.split(" ", 1)[1].strip())
-        if user_id:
-            return user_id
-
-    if x_user_id and x_user_id.strip():
-        return x_user_id.strip()
+    active_user_id = get_active_user_id(authorization=authorization, x_user_id=x_user_id)
+    if active_user_id != "guest_user":
+        return active_user_id
 
     guest_token = str(payload.get("guestToken") or payload.get("guest_token") or "").strip()
     if guest_token:
-        return f"guest:{guest_token[:64]}"
+        return resolve_guest_user_id(guest_token)
 
-    guest_email = str(((payload.get("shippingDetails") or {}).get("email")) or "").strip().lower()
-    if guest_email:
-        return f"guest:{guest_email[:64]}"
+    _failure(
+        status.HTTP_401_UNAUTHORIZED,
+        "UNAUTHORIZED",
+        "Guest token is required for guest checkout orders.",
+    )
 
-    return f"guest:anonymous:{int(time.time())}"
 
-
-def get_current_role(
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-    x_role: Annotated[str | None, Header(alias="X-Role")] = None,
-) -> str:
-    if authorization and authorization.lower().startswith("bearer "):
-        try:
-            payload = json.loads(_b64url_decode(authorization.split(" ", 1)[1].strip().split(".")[1]))
-            role = str(payload.get("role") or "").strip().lower()
-            if role == "vendor":
-                return "employee"
-            if role:
-                return role
-        except (ValueError, json.JSONDecodeError, IndexError):
-            pass
-
-    return (x_role or "").strip().lower()
 
 
 def _item_dict(item) -> dict:
@@ -273,6 +196,7 @@ def create_order(
         or sum(int(item.get("quantity") or 0) for item in normalized_items),
         "primary_label": payload.get("primaryLabel")
         or ", ".join(str(item.get("product_name") or "Item") for item in normalized_items[:2]),
+        "guest_token": payload.get("guestToken") or payload.get("guest_token"),
         "items": normalized_items,
     }
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.auth_utils import CurrentUserId, UserId
 from app.core.database import get_db
 from app.models.models import Cart, CartItem, Product
 from app.schemas.schemas import (
@@ -14,14 +15,12 @@ from app.schemas.schemas import (
     ApiEnvelope,
     CartResponse,
     MessageResponse,
+    MergeCartRequest,
     UpdateCartItemRequest,
 )
 
 router = APIRouter(prefix="/api/v1/cart", tags=["Cart"])
 
-
-DEFAULT_USER_ID = "guest_user"
-USER_ID_HEADER = "X-User-Id"
 
 ERROR_PRODUCT_NOT_FOUND = "Product not found."
 ERROR_NOT_ENOUGH_STOCK = "Not enough stock."
@@ -33,15 +32,52 @@ MESSAGE_CART_CLEARED = "Cart cleared successfully."
 DbSession = Annotated[Session, Depends(get_db)]
 
 
-def get_active_user_id(
-    x_user_id: Annotated[str, Header(alias=USER_ID_HEADER)] = DEFAULT_USER_ID,
-) -> str:
-    """Return active user id from header with a safe fallback."""
-    value = x_user_id.strip()
-    return value or DEFAULT_USER_ID
+def _resolve_guest_cart_user_id(guest_token: str) -> str:
+    return f"guest:{guest_token.strip()[:128]}"
 
 
-UserId = Annotated[str, Depends(get_active_user_id)]
+def _get_active_cart_by_user(db: Session, user_id: str) -> Cart | None:
+    return (
+        db.query(Cart)
+        .filter(
+            Cart.user_id == user_id,
+            Cart.is_active.is_(True),
+        )
+        .first()
+    )
+
+
+def _merge_guest_cart_into_user_cart(db: Session, user_id: str, guest_token: str) -> Cart:
+    guest_user_id = _resolve_guest_cart_user_id(guest_token)
+    guest_cart = _get_active_cart_by_user(db, guest_user_id)
+    merged_cart = _get_or_create_active_cart(db, user_id)
+
+    if guest_cart is None or not guest_cart.items:
+        return merged_cart
+
+    for item in guest_cart.items:
+        product = _get_active_product(db, item.product_id)
+        existing_item = _get_cart_item(db, merged_cart.id, item.product_id)
+        next_quantity = item.quantity if existing_item is None else existing_item.quantity + item.quantity
+
+        if product.stock < next_quantity:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=ERROR_NOT_ENOUGH_STOCK)
+
+        if existing_item is None:
+            db.add(
+                CartItem(
+                    cart_id=merged_cart.id,
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                )
+            )
+        else:
+            existing_item.quantity = next_quantity
+
+    guest_cart.is_active = False
+    db.commit()
+    db.refresh(merged_cart)
+    return merged_cart
 
 
 def _success(message: str, data):
@@ -152,6 +188,13 @@ def add_item(payload: AddCartItemRequest, db: DbSession, user_id: UserId) -> Car
     db.refresh(cart)
     response = CartResponse.from_orm_with_totals(cart)
     return _success("Item added to cart successfully.", _cart_payload(response))
+
+
+@router.post("/merge", response_model=ApiEnvelope, summary="Merge a guest cart into the authenticated user's cart")
+def merge_cart(payload: MergeCartRequest, db: DbSession, user_id: CurrentUserId) -> CartResponse:
+    cart = _merge_guest_cart_into_user_cart(db, user_id, payload.guest_token)
+    response = CartResponse.from_orm_with_totals(cart)
+    return _success("Cart merged successfully.", _cart_payload(response))
 
 
 @router.patch("/items/{product_id}", response_model=ApiEnvelope, summary="Set the exact quantity for a cart item")

@@ -5,7 +5,8 @@ USE abt_dev;
 CREATE TABLE orders (
     id INT AUTO_INCREMENT PRIMARY KEY,
     order_number VARCHAR(50) UNIQUE,
-    user_id INT NOT NULL,
+    user_id VARCHAR(100) NOT NULL,
+    guest_token VARCHAR(255),
     total DECIMAL(10,2),
     status VARCHAR(50),
     payment_method VARCHAR(50),
