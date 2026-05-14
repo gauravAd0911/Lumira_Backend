@@ -2,6 +2,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import requests
+from typing import Optional
 from app.config import settings
 
 class EmailService:
@@ -72,7 +73,7 @@ class EmailService:
         server.sendmail(self.email_from, to, msg.as_string())
         server.quit()
         return True
-
+Optional[str]
     def send_email(self, to: str, subject: str, html_content: str, text_content: str = None) -> bool:
         """Send HTML email with optional text fallback."""
         try:

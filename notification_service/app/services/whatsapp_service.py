@@ -40,7 +40,7 @@ class WhatsAppService:
             print(f"WhatsApp message sending failed: {e}")
             return False
 
-    def send_template_message(self, to: str, template_name: str, language_code: str = "en", components: list = None) -> bool:
+    def send_template_message(self, to: str, template_name: str, language_code: str = "en", components: list = None) -> bool: # type: ignore
         """Send template message via WhatsApp Business API."""
         try:
             to_clean = to.lstrip('+')

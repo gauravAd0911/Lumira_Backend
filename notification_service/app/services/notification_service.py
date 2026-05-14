@@ -31,7 +31,7 @@ class NotificationService:
     def mark_as_read(db: Session, notification_id: int) -> Notification:
         notification = db.get(Notification, notification_id)
         if notification:
-            notification.is_read = True
+            notification.is_read = True  # type: ignore[assignment]
             db.commit()
             db.refresh(notification)
         return notification
