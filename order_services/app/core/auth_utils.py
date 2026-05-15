@@ -26,7 +26,7 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def _decode_hs256_subject(token: str) -> str | None:
+def _decode_hs256_payload(token: str) -> dict | None:
     try:
         parts = token.split(".")
         if len(parts) != 3:
@@ -37,23 +37,31 @@ def _decode_hs256_subject(token: str) -> str | None:
             return None
 
         signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
-        expected_signature = hmac.new(
-            jwt_secret.encode("utf-8"),
-            signing_input,
-            hashlib.sha256,
+        expected_signature = hmac.HMAC(
+            key=jwt_secret.encode("utf-8"),
+            msg=signing_input,
+            digestmod=hashlib.sha256,
         ).digest()
         actual_signature = _b64url_decode(parts[2])
         if not hmac.compare_digest(expected_signature, actual_signature):
             return None
 
         payload = json.loads(_b64url_decode(parts[1]))
-    except (ValueError, json.JSONDecodeError):
+    except Exception:
         return None
 
     expires_at = payload.get("exp")
     if isinstance(expires_at, (int, float)) and expires_at < time.time():
         return None
     if payload.get("type") not in {None, "access"}:
+        return None
+
+    return payload
+
+
+def _decode_hs256_subject(token: str) -> str | None:
+    payload = _decode_hs256_payload(token)
+    if not payload:
         return None
 
     subject = payload.get("sub") or payload.get("user_id")
@@ -99,15 +107,13 @@ def get_current_role(
     x_role: RoleHeader = None,
 ) -> str:
     if authorization and authorization.lower().startswith("bearer "):
-        try:
-            payload = json.loads(_b64url_decode(authorization.split(" ", 1)[1].strip().split(".")[1]))
+        payload = _decode_hs256_payload(authorization.split(" ", 1)[1].strip())
+        if payload:
             role = str(payload.get("role") or "").strip().lower()
             if role == "vendor":
                 return "employee"
             if role:
                 return role
-        except (ValueError, json.JSONDecodeError, IndexError):
-            pass
 
     return (x_role or "").strip().lower()
 

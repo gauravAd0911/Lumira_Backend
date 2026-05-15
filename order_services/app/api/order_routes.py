@@ -6,7 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth_utils import CurrentUserId, get_active_user_id, get_current_role, resolve_guest_user_id
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/orders", tags=["Orders"])
 
 PAYMENT_SERVICE_BASE_URL = os.getenv("PAYMENT_SERVICE_BASE_URL", "http://localhost:8006").rstrip("/")
 PAYMENT_STATUS_TIMEOUT_SECONDS = float(os.getenv("PAYMENT_STATUS_TIMEOUT_SECONDS", "5"))
-INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
+DEFAULT_INTERNAL_SERVICE_TOKEN = "dev-internal-token"
 
 
 def _success(message: str, data):
@@ -129,6 +129,52 @@ def get_db():
 
 
 DBSession = Annotated[Session, Depends(get_db)]
+
+VALID_ORDER_STATUSES = {
+    "PLACED",
+    "CONFIRMED",
+    "PACKED",
+    "SHIPPED",
+    "OUT_FOR_DELIVERY",
+    "DELIVERED",
+    "CANCELLED",
+    "PAYMENT_FAILED",
+}
+
+CREATE_ORDER_EXAMPLE = {
+    "total": 398,
+    "summary": {
+        "total": 398,
+        "subtotal": 398,
+        "shippingAmount": 0,
+        "discount": 0,
+        "tax": 0,
+    },
+    "paymentDetails": {
+        "paymentReference": "PAYMENT_REFERENCE_FROM_PAYMENT_SERVICE",
+        "provider": "razorpay",
+        "amountPaid": 398,
+    },
+    "shippingDetails": {
+        "name": "Demo User",
+        "email": "demo@example.com",
+        "phone": "+919999999999",
+        "address": "Test Address",
+        "city": "Pune",
+        "state": "Maharashtra",
+        "pincode": "411001",
+        "country": "India",
+    },
+    "items": [
+        {
+            "productId": "PROD-001",
+            "name": "Mahi Test Product",
+            "price": 398,
+            "quantity": 1,
+            "imageUrl": "https://example.com/product.jpg",
+        }
+    ],
+}
 
 
 
@@ -317,9 +363,10 @@ def _require_operational_role(role: str):
 
 
 def _require_internal_token(x_internal_token: str | None):
-    if not INTERNAL_SERVICE_TOKEN:
+    internal_service_token = os.getenv("INTERNAL_SERVICE_TOKEN", DEFAULT_INTERNAL_SERVICE_TOKEN).strip()
+    if not internal_service_token:
         _failure(status.HTTP_503_SERVICE_UNAVAILABLE, "INTERNAL_AUTH_NOT_CONFIGURED", "Internal service authentication is not configured.")
-    if not x_internal_token or x_internal_token.strip() != INTERNAL_SERVICE_TOKEN:
+    if not x_internal_token or x_internal_token.strip() != internal_service_token:
         _failure(status.HTTP_403_FORBIDDEN, "FORBIDDEN", "Internal service token is invalid.")
 
 
@@ -348,11 +395,29 @@ def finalize(data: FinalizeOrderRequest, db: DBSession, user_id: CurrentUserId):
 
 @router.post("")
 def create_order(
-    payload: dict,
+    payload: Annotated[
+        dict,
+        Body(
+            openapi_examples={
+                "checkoutOrder": {
+                    "summary": "Create checkout order",
+                    "description": "Use this after payment verification. Do not paste the response from /api/v1/orders/finalize here.",
+                    "value": CREATE_ORDER_EXAMPLE,
+                }
+            }
+        ),
+    ],
     db: DBSession,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
 ):
+    if {"orderId", "orderNumber", "status"}.issubset(payload.keys()) and "total" not in payload:
+        _failure(
+            400,
+            "INVALID_ORDER_PAYLOAD",
+            "This endpoint creates a new checkout order. Do not paste the response from /api/v1/orders/finalize; send total, items, shippingDetails, and paymentDetails.paymentReference.",
+        )
+
     user_id = _resolve_checkout_actor_id(payload, authorization, x_user_id)
     payment_details = payload.get("paymentDetails") or {}
     summary = payload.get("summary") or {}
@@ -378,6 +443,13 @@ def create_order(
         or summary.get("total")
         or payment_details.get("amountPaid")
     )
+    if order_total is None:
+        _failure(
+            400,
+            "VALIDATION_ERROR",
+            "Order total is required. Send the full checkout order payload, not an existing order response.",
+        )
+
     payment_status = _require_verified_payment(
         payload=payload,
         expected_total=order_total,
@@ -423,35 +495,51 @@ def create_order(
         logger.error(f"[ORDER_CREATE] Unexpected error during finalization: {exc}", exc_info=True)
         _failure(500, "ORDER_CREATE_ERROR", f"Order creation failed: {str(exc)}")
 
+    order_id = created.get("orderId")
     order_number = created.get("orderNumber")
-    logger.info(f"[ORDER_CREATE] Order number generated: {order_number}")
-    
-    # Ensure session is refreshed after commit
-    service.db.expunge_all()
-    logger.info(f"[ORDER_CREATE] Session cleared. Attempting to retrieve order {order_number}")
-    
-    # Try to retrieve the order from database
-    order = service.order_repo.get_order_by_number(order_number)
-    logger.info(f"[ORDER_CREATE] Order retrieved by number: {order is not None}")
-    
-    if not order:
-        logger.warning(f"[ORDER_CREATE] Order not found by number {order_number}, trying by user_id {user_id}")
+    payment_reference = order_data.get("payment_reference")
+    logger.info(f"[ORDER_CREATE] Order generated: id={order_id}, number={order_number}")
+
+    logger.info(f"[ORDER_CREATE] Attempting to retrieve order id={order_id}, number={order_number}")
+    db.expire_all()
+    order = service.order_repo.get_order(order_id) if order_id else None
+    if not order and order_number:
+        order = service.order_repo.get_order_by_number(order_number)
+    if not order and order_number:
         order = service.order_repo.get_order_for_user(order_number, user_id)
-        logger.info(f"[ORDER_CREATE] Order retrieved by user_id: {order is not None}")
+    if not order and payment_reference:
+        order = service.order_repo.get_order_by_payment_reference(payment_reference)
 
-    if not order:
-        logger.error(f"[ORDER_CREATE] CRITICAL: Order {order_number} was saved but NOT found in database!")
-        _failure(
-            500,
-            "ORDER_SAVE_FAILED",
-            f"Order creation returned number {order_number} but database retrieval failed. "
-            "The order may not have been committed. Check backend logs and database connection.",
-        )
+    if order:
+        logger.info(f"[ORDER_CREATE] Order successfully created and retrieved in request session: id={order.id}")
+        return _success("Order created successfully.", _order_detail(order, service))
 
-    logger.info(f"[ORDER_CREATE] Order successfully created and retrieved: id={order.id}")
-    return _success(
-        "Order created successfully.",
-        _order_detail(order, service),
+    logger.warning(
+        "[ORDER_CREATE] Request session could not retrieve order id=%s number=%s; retrying with fresh DB session",
+        order_id,
+        order_number,
+    )
+    verify_db = SessionLocal()
+    try:
+        verify_service = OrderService(verify_db)
+        verified_order = verify_service.order_repo.get_order(order_id) if order_id else None
+        if not verified_order and order_number:
+            verified_order = verify_service.order_repo.get_order_by_number(order_number)
+        if not verified_order and payment_reference:
+            verified_order = verify_service.order_repo.get_order_by_payment_reference(payment_reference)
+
+        if verified_order:
+            logger.info(f"[ORDER_CREATE] Order verified with fresh DB session: id={verified_order.id}")
+            return _success("Order created successfully.", _order_detail(verified_order, verify_service))
+    finally:
+        verify_db.close()
+
+    logger.error(f"[ORDER_CREATE] CRITICAL: Order {order_number} was saved but NOT found in database!")
+    _failure(
+        500,
+        "ORDER_SAVE_FAILED",
+        f"Order creation returned number {order_number} but database retrieval failed. "
+        "The order may not have been committed. Check backend logs and database connection.",
     )
 
 
@@ -460,17 +548,29 @@ def get_orders(
     db: DBSession,
     user_id: CurrentUserId,
     role: Annotated[str, Depends(get_current_role)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(alias="perPage", ge=1, le=100)] = 50,
+    order_status: Annotated[str | None, Query(alias="status")] = None,
     x_user_email: Annotated[str | None, Header(alias="X-User-Email")] = None,
 ):
     service = OrderService(db)
+    normalized_status = str(order_status or "").upper().strip() or None
+    if normalized_status and normalized_status not in VALID_ORDER_STATUSES:
+        _failure(400, "INVALID_STATUS", "Invalid order status filter.")
+
     if role in {"admin", "employee"}:
+        orders = service.order_repo.get_all_orders(page=page, per_page=per_page, status=normalized_status)
         return _success(
             "Orders fetched successfully.",
-            {"orders": [_order_summary(order) for order in service.order_repo.get_all_orders()]},
+            {"orders": [_order_summary(order) for order in orders], "page": page, "perPage": per_page},
         )
+    if normalized_status:
+        _failure(403, "FORBIDDEN", "Status filtering is available only for admin and employee users.")
+
+    orders = service.order_repo.get_orders_for_user(user_id, email=x_user_email, page=page, per_page=per_page)
     return _success(
         "Orders fetched successfully.",
-        {"orders": [_order_summary(order) for order in service.order_repo.get_orders_for_user(user_id, email=x_user_email)]},
+        {"orders": [_order_summary(order) for order in orders], "page": page, "perPage": per_page},
     )
 
 
@@ -493,14 +593,23 @@ def get_order(
 
 
 @router.get("/{order_id}/tracking")
-def get_tracking(order_id: str, db: DBSession, user_id: CurrentUserId):
+def get_tracking(
+    order_id: str,
+    db: DBSession,
+    user_id: CurrentUserId,
+    role: Annotated[str, Depends(get_current_role)],
+    x_user_email: Annotated[str | None, Header(alias="X-User-Email")] = None,
+):
     service = OrderService(db)
-    order = service.order_repo.get_order_for_user(order_id, user_id)
+    if role in {"admin", "employee"}:
+        order = service.order_repo.get_order(order_id) if str(order_id).isdigit() else service.order_repo.get_order_by_number(order_id)
+    else:
+        order = service.order_repo.get_order_for_user(order_id, user_id, email=x_user_email)
     if not order:
         _failure(404, "ORDER_NOT_FOUND", "Order not found")
     return _success(
         "Order tracking fetched successfully.",
-        {"tracking": service.tracking_repo.get_tracking(order_id)},
+        {"tracking": service.tracking_repo.get_tracking(order.id)},
     )
 
 
@@ -541,6 +650,8 @@ def update_order_status(
     service.tracking_repo.add_tracking(order.id, next_status, payload.get("note") or f"Status updated to {next_status}")
     db.commit()
     refreshed = service.order_repo.get_order(order.id)
+    if next_status == "DELIVERED":
+        service.notification.send_delivery_notifications(refreshed)
     return _success("Order status updated successfully.", _order_detail(refreshed, service))
 
 
@@ -589,3 +700,11 @@ def admin_dashboard_summary(
             "status_breakdown": status_breakdown,
         },
     )
+
+
+
+
+
+
+
+

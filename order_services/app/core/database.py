@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-DATABASE_URL = settings.DB_URL or "mysql+pymysql://root:Gaurav%40123@localhost/abt_dev"
+DATABASE_URL = settings.DB_URL or "mysql+pymysql://root:Gaurav%40123@localhost/abt_order_db"
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -19,9 +19,13 @@ def init_db() -> None:
     from app.models import order_item, tracking  # noqa: F401
 
     logger.info("Initializing order service database schema")
+    _repair_order_schema()
+    _repair_order_items_schema()
+    _repair_order_tracking_schema()
     Base.metadata.create_all(bind=engine, checkfirst=True)
     _repair_order_schema()
     _repair_order_items_schema()
+    _repair_order_tracking_schema()
     logger.info("Order service database schema initialization completed")
 
 
@@ -37,10 +41,21 @@ def _repair_order_items_schema() -> None:
 
     with engine.begin() as connection:
         try:
+            connection.execute(text("ALTER TABLE order_items MODIFY COLUMN order_id BIGINT UNSIGNED NULL"))
             connection.execute(text("ALTER TABLE order_items MODIFY COLUMN product_id VARCHAR(100) NULL"))
         except OperationalError as exc:
             if "Incorrect column specifier" not in str(exc) and "Duplicate column name" not in str(exc):
                 raise
+
+
+def _repair_order_tracking_schema() -> None:
+    """Repair the order_tracking schema for the current Tracking ORM."""
+    inspector = inspect(engine)
+    if "order_tracking" not in inspector.get_table_names():
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE order_tracking MODIFY COLUMN order_id BIGINT UNSIGNED NULL"))
 
 
 def _index_exists(inspector, table_name: str, index_name: str) -> bool:
@@ -81,6 +96,8 @@ def _repair_order_schema() -> None:
     }
 
     with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE orders MODIFY COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"))
+
         for column_name, definition in column_definitions.items():
             if column_name not in existing_columns:
                 try:
@@ -135,3 +152,5 @@ def _repair_order_schema() -> None:
                 except OperationalError as exc:
                     if "Duplicate" not in str(exc):
                         raise
+
+

@@ -1,5 +1,5 @@
-CREATE DATABASE IF NOT EXISTS abt_dev;
-USE abt_dev;
+CREATE DATABASE IF NOT EXISTS abt_order_db;
+USE abt_order_db;
 
 -- Orders Table
 CREATE TABLE IF NOT EXISTS orders (

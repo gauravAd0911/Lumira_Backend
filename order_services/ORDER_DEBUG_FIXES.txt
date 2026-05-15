@@ -1,0 +1,137 @@
+ORDER SERVICE DEBUG FIX NOTES
+
+Fixed issues
+
+1. Removed db.expunge_all() after order creation.
+   How to find:
+   Search: expunge_all
+   File: app/api/order_routes.py
+   Why:
+   It detached ORM objects before the order was read back.
+
+2. JWT role parsing now verifies the HS256 signature.
+   How to find:
+   Search: get_current_role
+   File: app/core/auth_utils.py
+   Why:
+   Role is now read only from a verified bearer token. X-Role remains as a gateway/dev fallback.
+
+3. Stock deduction no longer imports a missing Product class.
+   How to find:
+   Search: DEDUCT_STOCK_ON_ORDER
+   Files: app/core/config.py, app/services/stock_service.py
+   Why:
+   The unfinished stock feature is disabled by default and no longer rolls back the order transaction.
+
+4. Order creation remains atomic.
+   How to find:
+   Search: finalize_order
+   File: app/services/order_service.py
+   Why:
+   Order, items, tracking, and optional stock handling are committed together by OrderService.
+
+5. Order list now has pagination and status validation.
+   How to find:
+   Search: get_orders
+   Files: app/api/order_routes.py, app/repositories/order_repo.py
+   Why:
+   Large order lists are limited with page/perPage. Status input is validated.
+
+6. Status updates explicitly touch updated_at.
+   How to find:
+   Search: update_status
+   File: app/repositories/order_repo.py
+   Why:
+   Audit timestamps change when order status changes.
+
+Not present in this codebase
+
+1. Raw SQL order status filter injection was not present.
+   Current code uses SQLAlchemy ORM queries.
+
+2. payment_routes.py and the unbounded webhook retry loop were not present.
+   There was no payment route file to patch.
+
+API structure
+
+GET /health
+GET /
+POST /api/v1/orders/finalize
+POST /api/v1/orders
+GET /api/v1/orders?page=1&perPage=50
+GET /api/v1/orders?status=PLACED&page=1&perPage=50
+GET /api/v1/orders/{order_id}
+GET /api/v1/orders/{order_id}/tracking
+GET /api/v1/orders/internal/guest-lookup?email=user@example.com
+PATCH /api/v1/orders/admin/{order_id}/status
+PATCH /api/v1/orders/admin/{order_id}/assign
+GET /api/v1/orders/admin/dashboard/summary
+
+Manual test cases
+
+1. Health:
+   GET http://127.0.0.1:8000/health
+   Expected: success true and status OK.
+
+2. Create/finalize order:
+   POST http://127.0.0.1:8000/api/v1/orders/finalize
+   Body:
+   {
+     "total": 2599,
+     "paymentMethod": "UPI",
+     "shippingAddress": "Flat 101, Pune",
+     "itemCount": 2,
+     "primaryLabel": "Electronics",
+     "items": [
+       {"productId": "101", "productName": "Mouse", "price": 999, "quantity": 1},
+       {"productId": "202", "productName": "Keyboard", "price": 1600, "quantity": 1}
+     ]
+   }
+   Expected: 200 response with orderNumber and status PLACED.
+
+3. List orders:
+   GET http://127.0.0.1:8000/api/v1/orders?page=1&perPage=50
+   Headers for admin/dev:
+   X-Role: admin
+   X-User-Id: admin-user
+   Expected: success true, orders array, page, perPage.
+
+4. Filter by valid status:
+   GET http://127.0.0.1:8000/api/v1/orders?status=PLACED&page=1&perPage=20
+   Headers:
+   X-Role: admin
+   X-User-Id: admin-user
+   Expected: only PLACED orders.
+
+5. Filter by invalid status:
+   GET http://127.0.0.1:8000/api/v1/orders?status=' OR '1'='1
+   Headers:
+   X-Role: admin
+   X-User-Id: admin-user
+   Expected: 400 INVALID_STATUS.
+
+6. Get order detail:
+   GET http://127.0.0.1:8000/api/v1/orders/{orderNumber}
+   Headers:
+   X-Role: admin
+   X-User-Id: admin-user
+   Expected: order details with items.
+
+7. Update status:
+   PATCH http://127.0.0.1:8000/api/v1/orders/admin/{orderNumber}/status
+   Headers:
+   X-Role: admin
+   Body:
+   {"status": "CONFIRMED", "note": "Confirmed by admin", "actorUserId": "admin-user"}
+   Expected: 200 and updated_at changes in database.
+
+Run commands
+
+1. Install:
+   pip install -r requirements.txt
+
+2. Run:
+   uvicorn app.main:app --reload
+
+3. Compile check:
+   python -m compileall app

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 from app.models.order import Order
 from app.models.order_item import OrderItem
@@ -33,17 +35,26 @@ class OrderRepository:
             )
             self.db.add(db_item)
 
-    def get_all_orders(self):
-        return self.db.query(Order).order_by(Order.created_at.desc()).all()
+    def get_all_orders(self, *, page: int | None = None, per_page: int | None = None, status: str | None = None):
+        query = self.db.query(Order)
+        if status:
+            query = query.filter(Order.status == status)
+        query = query.order_by(Order.created_at.desc())
+        if page is not None and per_page is not None:
+            query = query.offset((page - 1) * per_page).limit(per_page)
+        return query.all()
 
-    def get_orders_for_user(self, user_id, email=None):
+    def get_orders_for_user(self, user_id, email=None, *, page: int | None = None, per_page: int | None = None):
         query = self.db.query(Order).filter(Order.user_id == user_id)
         normalized_email = str(email or "").lower().strip()
         if normalized_email:
             query = self.db.query(Order).filter(
                 (Order.user_id == user_id) | (Order.guest_email == normalized_email)
             )
-        return query.order_by(Order.created_at.desc()).all()
+        query = query.order_by(Order.created_at.desc())
+        if page is not None and per_page is not None:
+            query = query.offset((page - 1) * per_page).limit(per_page)
+        return query.all()
 
     def get_guest_orders_by_email(self, email, order_number=None, limit=20):
         query = self.db.query(Order).filter(Order.guest_email == str(email or "").lower().strip())
@@ -88,6 +99,7 @@ class OrderRepository:
             return None
 
         order.status = status
+        order.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(order)
         return order

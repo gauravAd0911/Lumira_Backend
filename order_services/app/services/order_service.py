@@ -68,31 +68,34 @@ class OrderService:
             if settings.DEDUCT_STOCK_ON_ORDER:
                 deduct_stock_for_order(self.db, order.id, data.get("items", []))
             
+            order_id = order.id
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
 
         return {
+            "orderId": str(order_id),
             "orderNumber": order_number,
             "status": OrderStatus.PLACED
         }
 
-    def mark_delivered(self, order_id: int, phone: str) -> None:
-        """
-        Mark order as delivered and send notification.
-        """
+    def mark_delivered(self, order_id: int, phone: str | None = None) -> None:
+        """Mark order as delivered and send customer notifications."""
 
-        self.order_repo.update_status(order_id, OrderStatus.DELIVERED)
+        order = self.order_repo.update_status(order_id, OrderStatus.DELIVERED)
+        if phone and order and not order.guest_phone:
+            order.guest_phone = phone
 
         self.tracking_repo.add_tracking(
             order_id,
             OrderStatus.DELIVERED,
             "Delivered successfully"
         )
+        self.db.commit()
 
-        # Send SMS notification
-        self.notification.send_delivery_sms(phone)
+        if order:
+            self.notification.send_delivery_notifications(order)
 
     # =========================
     # PRIVATE HELPERS
@@ -150,3 +153,6 @@ class OrderService:
         if isinstance(item, dict):
             return item.get(key)
         return getattr(item, key, None)
+
+
+

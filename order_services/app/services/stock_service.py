@@ -5,7 +5,6 @@ Skips reservation system if disabled.
 """
 
 import logging
-from datetime import datetime
 from sqlalchemy.orm import Session
 from app.core.config import settings
 
@@ -30,34 +29,12 @@ def deduct_stock_for_order(db: Session, order_id: int, order_items: list) -> boo
         logger.info(f"Stock deduction disabled. Skipping for order {order_id}")
         return True
     
-    try:
-        # Import Product model dynamically to avoid circular imports
-        from app.models.order import Product  # Assuming Product model exists
-        
-        for item in order_items:
-            product_id = item.get("product_id") or item.get("id")
-            quantity = item.get("quantity", 1)
-            
-            # Try to find product in shared database
-            product = None
-            try:
-                # This would need proper model import - adjust based on your schema
-                logger.info(
-                    f"Deducting stock: Product {product_id} "
-                    f"qty: {quantity}"
-                )
-            except Exception as e:
-                logger.warning(f"Could not deduct stock for product {product_id}: {e}")
-                continue
-        
-        db.commit()
-        logger.info(f"Stock deduction completed for order {order_id}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Stock deduction failed for order {order_id}: {e}")
-        db.rollback()
-        return False
+    logger.warning(
+        "Stock deduction requested for order %s, but no Product model is configured. "
+        "Disable DEDUCT_STOCK_ON_ORDER or wire this service to the product service.",
+        order_id,
+    )
+    return True
 
 
 def is_reservation_enabled() -> bool:
